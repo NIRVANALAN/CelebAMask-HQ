@@ -1,4 +1,5 @@
-
+from tqdm import tqdm
+import ipdb
 import os
 import time
 import torch
@@ -12,14 +13,19 @@ import torch.nn.functional as F
 
 from unet import unet
 from utils import *
-from tensorboardX import SummaryWriter
-writer = SummaryWriter('runs/training')
+
+from mmseg.models.losses import accuracy, cross_entropy
+from mmseg.core.evaluation import mean_iou # mIOU
+
+
 
 class Trainer(object):
-    def __init__(self, data_loader, config):
+    def __init__(self, data_loader, eval_loader, config):
 
         # Data loader
         self.data_loader = data_loader
+        self.eval_loader = eval_loader
+        self.eval_step = config.eval_step
 
         # exact model and loss
         self.model = config.model
@@ -44,6 +50,7 @@ class Trainer(object):
         self.model_save_path = config.model_save_path
         self.sample_path = config.sample_path
         self.log_step = config.log_step
+        self.eval_step = config.eval_step
         self.sample_step = config.sample_step
         self.model_save_step = config.model_save_step
         self.version = config.version
@@ -55,6 +62,9 @@ class Trainer(object):
 
         self.build_model()
 
+        from tensorboardX import SummaryWriter
+        self.writer = SummaryWriter(f'{self.log_path}/training')
+
         if self.use_tensorboard:
             self.build_tensorboard()
 
@@ -63,6 +73,7 @@ class Trainer(object):
             self.load_pretrained_model()
 
     def train(self):
+        writer = self.writer
 
         # Data iterator
         data_iter = iter(self.data_loader)
@@ -79,6 +90,7 @@ class Trainer(object):
         start_time = time.time()
         for step in range(start, self.total_step):
 
+
             self.G.train()
             try:
                 imgs, labels = next(data_iter)
@@ -93,6 +105,8 @@ class Trainer(object):
             oneHot_size = (size[0], 19, size[2], size[3])
             labels_real = torch.cuda.FloatTensor(torch.Size(oneHot_size)).zero_()
             labels_real = labels_real.scatter_(1, labels.data.long().cuda(), 1.0)
+
+            ipdb.set_trace()
 
             imgs = imgs.cuda()
             # ================== Train G =================== #
@@ -111,35 +125,124 @@ class Trainer(object):
                 print("Elapsed [{}], G_step [{}/{}], Cross_entrophy_loss: {:.4f}".
                       format(elapsed, step + 1, self.total_step, c_loss.data))
 
-            label_batch_predict = generate_label(labels_predict, self.imsize)
-            label_batch_real = generate_label(labels_real, self.imsize)
 
             # scalr info on tensorboardX
             writer.add_scalar('Loss/Cross_entrophy_loss', c_loss.data, step) 
 
-            # image infor on tensorboardX
-            img_combine = imgs[0]
-            real_combine = label_batch_real[0]
-            predict_combine = label_batch_predict[0]
-            for i in range(1, self.batch_size):
-                img_combine = torch.cat([img_combine, imgs[i]], 2)
-                real_combine = torch.cat([real_combine, label_batch_real[i]], 2)
-                predict_combine = torch.cat([predict_combine, label_batch_predict[i]], 2)
-            writer.add_image('imresult/img', (img_combine.data + 1) / 2.0, step)
-            writer.add_image('imresult/real', real_combine, step)
-            writer.add_image('imresult/predict', predict_combine, step)
 
             # Sample images
             if (step + 1) % self.sample_step == 0:
                 labels_sample = self.G(imgs)
-                labels_sample = generate_label(labels_sample)
-                labels_sample = torch.from_numpy(labels_sample)
+                labels_sample = generate_label(labels_sample, self.imsize)
+                # labels_sample = torch.from_numpy(labels_sample)
                 save_image(denorm(labels_sample.data),
                            os.path.join(self.sample_path, '{}_predict.png'.format(step + 1)))
 
             if (step+1) % model_save_step==0:
                 torch.save(self.G.state_dict(),
                            os.path.join(self.model_save_path, '{}_G.pth'.format(step + 1)))
+            
+            if (step+1) % self.eval_step ==0:
+
+                # image infor on tensorboardX
+                label_batch_predict = generate_label(labels_predict, self.imsize)
+                label_batch_real = generate_label(labels_real, self.imsize)
+                img_combine = imgs[0]
+                real_combine = label_batch_real[0]
+                predict_combine = label_batch_predict[0]
+                for i in range(1, self.batch_size):
+                    img_combine = torch.cat([img_combine, imgs[i]], 2)
+                    real_combine = torch.cat([real_combine, label_batch_real[i]], 2)
+                    predict_combine = torch.cat([predict_combine, label_batch_predict[i]], 2)
+
+                writer.add_image('imresult/train_img', (img_combine.data + 1) / 2.0, step)
+                writer.add_image('imresult/train_real', real_combine, step)
+                writer.add_image('imresult/train_predict', predict_combine, step)
+
+                self.eval(step) # metrics
+
+    @torch.no_grad()
+    def eval(self, step):
+
+        # Start time
+
+        start_time = time.time()
+        self.G.eval()
+
+        pixel_acc_batch = []
+        miou_batch = []
+        
+
+        # step = 0
+        
+        for batch_idx, (imgs, labels) in enumerate(tqdm(self.eval_loader)):
+            # step += imgs.shape[0]
+            size = labels.size() # 8 1 512 512
+            # transfer to one-hot encoder
+            labels = labels.cuda()
+            labels[:, 0, :, :] = labels[:, 0, :, :] * 255.0 # recover seg label from png 0-17 /= 255
+            labels_real_plain = labels[:, 0, :, :]
+            labels = labels[:, 0, :, :].view(size[0], 1, size[2], size[3])
+            oneHot_size = (size[0], 19, size[2], size[3])
+            labels_real = torch.cuda.FloatTensor(torch.Size(oneHot_size)).zero_()
+            labels_real = labels_real.scatter_(1, labels.data.long().cuda(), 1.0)
+
+            imgs = imgs.cuda()
+
+            # ================== Train G =================== #
+            labels_predict = self.G(imgs)
+                       
+            # Calculate cross entropy loss
+            c_loss = cross_entropy2d(labels_predict, labels_real_plain.long())
+
+            labels_for_metric = labels[:, 0, ...].long() # N * 512 * 512
+
+            # pix_acc = torch.mean(labels_predict_argmax == labels[:, 0, ...])
+
+            # pix_acc = accuracy(labels_predict, labels_for_metric) # todo, ignore BG
+
+            # acc = labels_for_metric.eq(labels_predict_argmax)
+
+            pred_segmaps = torch.argmax(labels_predict, 1).cpu().numpy()
+            miou = mean_iou(pred_segmaps, labels_for_metric.cpu().numpy(), num_classes=19, ignore_index=0) # needs check
+            aAcc, IoU, Acc = miou['aAcc'], miou['IoU'], miou['Acc'] # todo optimize
+
+            # print("pix_acc: {:.4f}".format(pix_acc.item()))
+            # writer.add_scalar('Loss/Cross_entrophy_loss', c_loss.data, step) 
+            # writer.add_scalar('Metrics/IoU', c_loss.data, step) 
+
+            pixel_acc_batch.append(aAcc.item())
+            miou_batch.append(IoU)
+            
+            break # debug
+
+        # image infor on tensorboardX
+
+
+        label_batch_predict = generate_label(labels_predict, self.imsize)
+        label_batch_real = generate_label(labels_real, self.imsize)
+
+        img_combine = imgs[0]
+        real_combine = label_batch_real[0]
+        predict_combine = label_batch_predict[0]
+
+        # save last batch for vis
+        for i in range(1, self.batch_size):
+            img_combine = torch.cat([img_combine, imgs[i]], 2)
+            real_combine = torch.cat([real_combine, label_batch_real[i]], 2)
+            predict_combine = torch.cat([predict_combine, label_batch_predict[i]], 2)
+        self.writer.add_image('imresult/eval_img', (img_combine.data + 1) / 2.0, step)
+        self.writer.add_image('imresult/eval_real', real_combine, step)
+        self.writer.add_image('imresult/eval_predict', predict_combine, step)
+        
+        ipdb.set_trace()
+        pix_acc = torch.mean(torch.Tensor(pixel_acc_batch)).item()
+        mIoU = np.nanmean(np.array(miou_batch)) # iou for each class
+        self.writer.add_scalar('Eval Metrics/aAcc', pix_acc, step) 
+        self.writer.add_scalar('Eval Metrics/mIoU', mIoU, step) 
+        # self.writer.add_scalar('Eval Metrics/PixelAcc', pix_acc, step) 
+
+        print("pix_acc: {:.4f}, mIoU: {:.4f}".format(pix_acc, mIoU))
     
     def build_model(self):
 
@@ -157,10 +260,13 @@ class Trainer(object):
     def build_tensorboard(self):
         from logger import Logger
         self.logger = Logger(self.log_path)
+        # self.writer = writer
 
     def load_pretrained_model(self):
+        # self.G.load_state_dict(torch.load(os.path.join(
+        #     self.model_save_path, '{}_G.pth'.format(self.pretrained_model))))
         self.G.load_state_dict(torch.load(os.path.join(
-            self.model_save_path, '{}_G.pth'.format(self.pretrained_model))))
+            self.model_save_path, '{}.pth'.format(self.pretrained_model))))
         print('loaded trained models (step: {})..!'.format(self.pretrained_model))
 
     def reset_grad(self):

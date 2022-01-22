@@ -1,4 +1,5 @@
-
+from tqdm import tqdm, trange
+import ipdb
 import os
 import time
 import torch
@@ -34,10 +35,15 @@ def make_dataset(dir):
     images = []
     assert os.path.isdir(dir), '%s is not a valid directory' % dir
 
+
     f = dir.split('/')[-1].split('_')[-1]
     print (dir, len([name for name in os.listdir(dir) if os.path.isfile(os.path.join(dir, name))]))
+
+    # ipdb.set_trace()
+
     for i in range(len([name for name in os.listdir(dir) if os.path.isfile(os.path.join(dir, name))])):
-        img = str(i) + '.jpg'
+        # img = str(i) + '.jpg'
+        img = str(i) + '.png'
         path = os.path.join(dir, img)
         images.append(path)
    
@@ -79,11 +85,15 @@ class Tester(object):
         self.test_color_label_path = config.test_color_label_path
         self.test_image_path = config.test_image_path
 
+        self.test_label_save_path = config.test_label_save_path
+        self.test_color_label_save_path = config.test_color_label_save_path
+
         # Test size and model
         self.test_size = config.test_size
         self.model_name = config.model_name
 
         self.build_model()
+        self.log=True
 
     def test(self):
         transform = transformer(True, True, True, False, self.imsize) 
@@ -94,9 +104,10 @@ class Tester(object):
         self.G.eval() 
         batch_num = int(self.test_size / self.batch_size)
 
-        for i in range(batch_num):
-            print (i)
+        for i in trange(batch_num):
+            # print (i)
             imgs = []
+            # ipdb.set_trace()
             for j in range(self.batch_size):
                 path = test_paths[i * self.batch_size + j]
                 img = transform(Image.open(path))
@@ -104,11 +115,13 @@ class Tester(object):
             imgs = torch.stack(imgs) 
             imgs = imgs.cuda()
             labels_predict = self.G(imgs)
-            labels_predict_plain = generate_label_plain(labels_predict)
-            labels_predict_color = generate_label(labels_predict)
-            for k in range(self.batch_size):
-                cv2.imwrite(os.path.join(self.test_label_path, str(i * self.batch_size + k) +'.png'), labels_predict_plain[k])
-                save_image(labels_predict_color[k], os.path.join(self.test_color_label_path, str(i * self.batch_size + k) +'.png'))
+            labels_predict_plain = generate_label_plain(labels_predict, self.imsize)
+            labels_predict_color = generate_label(labels_predict, self.imsize)
+
+            if self.log:
+                for k in range(self.batch_size):
+                    cv2.imwrite(os.path.join(self.test_label_save_path, str(i * self.batch_size + k) +'.png'), labels_predict_plain[k])
+                    save_image(labels_predict_color[k], os.path.join(self.test_label_save_path, str(i * self.batch_size + k) +'.png'))
 
     def build_model(self):
         self.G = unet().cuda()

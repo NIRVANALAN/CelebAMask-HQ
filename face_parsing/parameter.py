@@ -21,12 +21,15 @@ def get_parameters():
     parser.add_argument('--beta1', type=float, default=0.5)
     parser.add_argument('--beta2', type=float, default=0.999)
 
+    parser.add_argument('--train_split_size', type=int, default=-1, help='how many times to update the generator')
+
     # Testing setting
     parser.add_argument('--test_size', type=int, default=2824) 
     parser.add_argument('--model_name', type=str, default='model.pth') 
 
     # using pretrained
-    parser.add_argument('--pretrained_model', type=int, default=None)
+    # parser.add_argument('--pretrained_model', type=int, default=None)
+    parser.add_argument('--pretrained_model', type=str, default=None)
 
     # Misc
     parser.add_argument('--train', type=str2bool, default=True)
@@ -42,10 +45,17 @@ def get_parameters():
     parser.add_argument('--test_image_path', type=str, default='./Data_preprocessing/test_img') 
     parser.add_argument('--test_label_path', type=str, default='./test_results') 
     parser.add_argument('--test_color_label_path', type=str, default='./test_color_visualize') 
+    parser.add_argument('--img_suffix', type=str, default='jpg')
+
+    # log
+    parser.add_argument('--test_label_save_path', type=str, default='./test_results') 
+    parser.add_argument('--test_color_label_save_path', type=str, default='./test_color_visualize') 
 
     # Step size
     parser.add_argument('--log_step', type=int, default=10)
     parser.add_argument('--sample_step', type=int, default=100)
     parser.add_argument('--model_save_step', type=float, default=1.0)
+    parser.add_argument('--eval_step', type=int, default=2000)
+
 
     return parser.parse_args()

@@ -1,4 +1,5 @@
 import os
+import ipdb
 import torch
 import numpy as np
 from torch.autograd import Variable
@@ -103,6 +104,7 @@ def generate_label(inputs, imsize):
 
 def generate_label_plain(inputs, imsize):
     pred_batch = []
+
     for input in inputs:
         input = input.view(1, 19, imsize, imsize)
         pred = np.squeeze(input.data.max(1)[1].cpu().numpy(), axis=0)
